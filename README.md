@@ -344,5 +344,49 @@ Now we will try so called few shot learning. As you can see from the training gr
 
 
 ```python
-
+multi_test = 30 
+%run -i _code_.py
 ```
+
+      0 Label 00100001 Error  1.501     Ready   1
+      1 Label 01010010 Error  1.679     Ready   2
+      2 Label 00000100 Error  0.396     Ready   1
+      3 Label 00111100 Error  0.504     Ready   2
+      4 Label 00010001 Error  0.268     Ready   2
+      5 Label 01000011 Error  1.339     Ready   7
+      6 Label 01100001 Error  1.701     Ready   1
+      7 Label 00000000 Error  0.010     Ready   0
+      8 Label 00101000 Error  1.147     Ready   1
+      9 Label 00011110 Error  1.153     Ready   2
+     10 Label 01110001 Error  0.209     Ready   1
+     11 Label 00011111 Error  0.297     Ready   2
+     12 Label 01011110 Error  0.307     Ready   3
+     13 Label 01111001 Error  0.298     Ready   1
+     14 Label 01000110 Error  0.292     Ready   5
+     15 Label 00111111 Error  0.131     Ready   3
+     16 Label 01001100 Error  0.125     Ready   3
+     17 Label 01011111 Error  0.103     Ready   1
+     18 Label 00001011 Error  0.024     Ready   3
+     19 Label 00011100 Error  0.174     Ready   5
+     20 Label 01110101 Error  0.091     Ready   2
+     21 Label 00110101 Error  0.181     Ready   3
+     22 Label 01001010 Error  0.240     Ready   8
+     23 Label 00000110 Error  1.769     Ready  30
+     24 Label 01110001 Error  0.045     Ready   5
+     25 Label 00000001 Error  0.071     Ready   5
+     26 Label 00100011 Error  0.045     Ready   3
+     27 Label 00100101 Error  0.491     Ready   2
+     28 Label 00111010 Error  0.082     Ready   4
+     29 Label 01001011 Error  0.076     Ready   4
+     30 Label 00010101 Error  0.114     Ready   3
+
+
+
+![png](README_files/README_13_1.png)
+
+
+as you can see, with seeing every data point only a small number of times, this trains the model. We use a very simple straight forward approach. With one data point we do a training up to a treshold, than we take the next data point. From the table you can see, that most of the time the training is successfull, but sometimes it is not.
+
+In fact the training here is a little more improved: For every test we reinitialize the random weights of the last layer and train with a different randomly chosen output combination. We train the first layer with a slower learning rate, but this is not yet important. This simple examples work even without this additional improvments.
+
+Now we will start using emnist data, which will result in few shot learning of handwritten digit recognition.
