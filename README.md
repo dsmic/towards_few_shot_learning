@@ -1,982 +1,23 @@
-## towards_few_shot_learning
-Jupyter notebook with some steps towards few shot learning
+We use the EMNIST dataset of handwritten digits to test a simple
+approach for few shot learning. Choosing a fully connected net with inputs
+and layer outputs between 0 and 1 and no bias parameters we first trained
+the network with a subset of the digits. The pre-trained net is used for few
+shot learning with the untrained digits. Two basic idea were necessary:
+first the training of the first layer was disabled (or very slow) during few
+shot learning, and second using a shot consists of one untrained digit
+together with four previously trained digits and perform a training up
+to a predefined threshold. This way we reach a 90% accuracy for all
+handwritten digits after 10 shots.
 
-We run this jupyter notebook within conda and have installed cupy (using conda) and emnist (using pip).
-
-We start defining some functions for later use. They are code folded here to keep the notebook readable.
-
-
-```python
-%%writefile _code_.py↔
-
-```
-
-    Writing _code_.py
-
-
-Here a set of constants are defined, which control the configuration of the test network. There are a number of constants, which are not important at the moment, as it the code is a playing tool.
+This jupyter notebook contains the generation of the tabels and images in the pdf: few_shot_paper.pdf
 
 
 ```python
-#import cupy as np # helps with the math (Cuda supported: faster for hidden_size > 256 probably and most mnist cases with batch training)
-import numpy as np # helps with the math (if no Cuda is availible or size is small for simple tests)
-from matplotlib import pyplot
-from math import cos, sin, atan
-import random
-import pickle
-from datetime import datetime
-from tqdm import tqdm
-from emnist import extract_training_samples, extract_test_samples
+%%writefile _code_.py ↔
 
-def np_array(x):
-    return np.array(x)# , dtype = np.float32) # float32 is 3 times faster on batch training with GTX1070Ti and 70 times faster than i7-4790K with float64, cpu does not help float32 a lot)
-check_for_nan = True
-
-pyplot.rcParams['figure.dpi'] = 150
-pyplot.interactive(False) # seems not to fix memory issue
-
-verbose = 0
-
-do_check_all = 0 #1000            # 0 to turn off
-check_output_limit = 128        # number of output combinations, as not every neural net is capable of learning input 0 0 0 -> output 1, if 128 the output to the first input is always 0    
-
-multi_test = -1 #1000             # -1 to turn off
-max_iter = 30
-
-hidden_size = 8
-two_hidden_layers = True
-use_bias = False
-
-lr = 2
-lr_few_shot = 0.5
-use_stability = False
-stability_mean = 0.1
-clip_weights = 1 # (clipping to 1 was used for most tests)
-clip_bias = 1
-init_rand_ampl = 0.1
-init_rand_ampl0 = 0.1 # for first layer    (2 was used for most tests to make the first layer a mostly random layer)
-
-# drawing parameters
-scale_linewidth = 0.1
-weight_tanh_scale = 0.1
-scale_for_neuron_diff = 1
-
-scale_sigmoid = 3
-shift_sigmoid = 1
-
-few_shot_end = 0.7 # for early tests (no mnist)
-few_shot_max_try = 100
-few_shot_threshold_ratio = 1.5 # for mnist
-few_shot_threshold = 0.3
-
-# if 1 it is standard understanding of few shot learning, giving on data point at each shot, otherwize it adds more data points from availible training data to each shot
-few_shot_more_at_once = 1
-
-
-all_labels = [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
-# random.shuffle(all_labels)    # if shuffeld, preloading can not work !!!!!
-
-try_load_pretrained = False
-few_shot_fast_load_num = 4000 # should also handle the batch_sizes for displaying batch training results properly
-
-test_from_random_input = False
-i_bits = 8
-
-# input data
-inputs = np_array([[0, 0, 0],
-                   [0, 0, 1],
-                   [0, 1, 0],
-                   [0, 1, 1],
-                   [1, 0, 0],
-                   [1, 0, 1],
-                   [1, 1, 0],
-                   [1, 1, 1]])
-
-# output data
-outputs = np_array([[0], [0], [0], [0], [1], [1], [0], [1]])
-
-# swith to tanh and making input and output 1 -1 instead of 1 0
-do_pm = False
-
-use_emnist = False
-load_mnist = False
-
-do_batch_training = 0
-do_drop_weights = [] # [0.9,0.9]
-initial_net_first_layer_slow_learning = 0.1 # most tests are done with 0.1 here, just try if it was really necessary
-
-first_n_to_use = 600000
-label_to_one = 5
-
-num_outputs = 1 # most early test need this to be 1, later with mnist dataset this can be set to 10 eg.
-
-try_mnist_few_shot = 10
-use_every_shot_n_times = 10 # every data is used n times. so one shot means the data from first shot is used n times
-change_first_layers_slow_learning = [0.1, 1] # [0, 0.1]
-
-disable_progressbar = True
-# End of constant definitions
 ```
 
-We define a input output combination, which should be learned
-
-
-```python
-for i in range(len(outputs)):
-    print(inputs[i][0], inputs[i][1], inputs[i][2], '-->', outputs[i])
-```
-
-    0 0 0 --> [0]
-    0 0 1 --> [0]
-    0 1 0 --> [0]
-    0 1 1 --> [0]
-    1 0 0 --> [1]
-    1 0 1 --> [1]
-    1 1 0 --> [0]
-    1 1 1 --> [1]
-
-
-Now let's test training the net and draw the result
-
-
-```python
-NN2 = setup_net()
-NN2.set_input(inputs, outputs)
-NN2.train(3000)
-NN2.plot_train_history()
-NN2.set_input(inputs[5], outputs[5])
-NN2.forward()
-NN2.draw(outputs[5])
-```
-
-
-![png](README_files/README_7_0.png)
-
-
-
-![png](README_files/README_7_1.png)
-
-
-Here you see propagating the input up to the output. The big circle around the output is the 'correct' answer, we trained for.
-If one tries different input -> output relations it can be seen, that not all are trained correct every time. Here it starts to become interesting, as the training success depends on the random initialization of the weights within the layers. It might also be possible, that the network is not capable to learn the input output relation. For example we choose a network, which is not very powerfull, as it does not contain bias and uses sigmoid activation layers. If all inputs are 0 the output must be 0 therefore. We check all other input output combinations and see, that the network is capable of learning them:
-
-
-```python
-lr = 2
-hidden_size = 8
-missed = 0
-stats = {}
-for k in range(8):
-    stats[k] = 0
-for i in range(128):
-    for k in range(8):
-        NN2 = setup_net()
-        bbs = ('{0:0'+str(i_bits)+'b}').format(i)
-        outputs = bbs_to_output(bbs)
-        NN2.set_input(inputs, outputs)
-        NN2.train(5000 * 2 ** k)
-        errsum = np.sum(NN2.error**2)
-        if errsum <= 0.25:
-            break
-    stats[k] += 1
-    if errsum > 0.25:
-        missed += 1
-    print('%4d %8s %6.3f %3d %d' % (i, bbs, errsum, missed, k))
-print('tried %4d  missed: %3d' % (i + 1, missed), stats)
-```
-
-       0 00000000  0.002   0 0
-       1 00000001  0.016   0 0
-       2 00000010  0.035   0 0
-       3 00000011  0.012   0 0
-       4 00000100  0.037   0 0
-       5 00000101  0.010   0 0
-       6 00000110  0.013   0 0
-       7 00000111  0.021   0 0
-       8 00001000  0.034   0 0
-       9 00001001  0.013   0 1
-      10 00001010  0.043   0 0
-      11 00001011  0.024   0 0
-      12 00001100  0.039   0 0
-      13 00001101  0.017   0 0
-      14 00001110  0.036   0 0
-      15 00001111  0.030   0 0
-      16 00010000  0.044   0 0
-      17 00010001  0.009   0 0
-      18 00010010  0.037   0 0
-      19 00010011  0.008   0 0
-      20 00010100  0.043   0 0
-      21 00010101  0.018   0 0
-      22 00010110  0.016   0 0
-      23 00010111  0.009   0 0
-      24 00011000  0.006   0 2
-      25 00011001  0.018   0 1
-      26 00011010  0.083   0 0
-      27 00011011  0.059   0 0
-      28 00011100  0.113   0 0
-      29 00011101  0.011   0 0
-      30 00011110  0.155   0 1
-      31 00011111  0.029   0 0
-      32 00100000  0.036   0 0
-      33 00100001  0.027   0 0
-      34 00100010  0.038   0 0
-      35 00100011  0.020   0 0
-      36 00100100  0.006   0 2
-      37 00100101  0.021   0 1
-      38 00100110  0.067   0 0
-      39 00100111  0.073   0 0
-      40 00101000  0.065   0 0
-      41 00101001  0.200   0 0
-      42 00101010  0.044   0 0
-      43 00101011  0.034   0 0
-      44 00101100  0.065   0 0
-      45 00101101  0.130   0 1
-      46 00101110  0.046   0 0
-      47 00101111  0.034   0 0
-      48 00110000  0.039   0 0
-      49 00110001  0.028   0 0
-      50 00110010  0.048   0 0
-      51 00110011  0.029   0 0
-      52 00110100  0.145   0 0
-      53 00110101  0.017   0 0
-      54 00110110  0.019   0 2
-      55 00110111  0.038   0 0
-      56 00111000  0.059   0 0
-      57 00111001  0.097   0 3
-      58 00111010  0.049   0 0
-      59 00111011  0.032   0 0
-      60 00111100  0.063   0 0
-      61 00111101  0.076   0 0
-      62 00111110  0.013   0 0
-      63 00111111  0.019   0 0
-      64 01000000  0.035   0 0
-      65 01000001  0.054   0 0
-      66 01000010  0.017   0 1
-      67 01000011  0.013   0 2
-      68 01000100  0.038   0 0
-      69 01000101  0.022   0 0
-      70 01000110  0.154   0 0
-      71 01000111  0.032   0 0
-      72 01001000  0.066   0 0
-      73 01001001  0.108   0 0
-      74 01001010  0.063   0 0
-      75 01001011  0.096   0 4
-      76 01001100  0.038   0 0
-      77 01001101  0.031   0 0
-      78 01001110  0.040   0 0
-      79 01001111  0.034   0 0
-      80 01010000  0.036   0 0
-      81 01010001  0.010   0 0
-      82 01010010  0.121   0 0
-      83 01010011  0.044   0 0
-      84 01010100  0.048   0 0
-      85 01010101  0.029   0 0
-      86 01010110  0.072   0 1
-      87 01010111  0.045   0 0
-      88 01011000  0.172   0 0
-      89 01011001  0.011   0 3
-      90 01011010  0.064   0 0
-      91 01011011  0.028   0 0
-      92 01011100  0.036   0 0
-      93 01011101  0.037   0 0
-      94 01011110  0.046   0 0
-      95 01011111  0.020   0 0
-      96 01100000  0.057   0 0
-      97 01100001  0.063   0 1
-      98 01100010  0.129   0 0
-      99 01100011  0.012   0 2
-     100 01100100  0.077   0 0
-     101 01100101  0.137   0 3
-     102 01100110  0.054   0 0
-     103 01100111  0.099   0 0
-     104 01101000  0.079   0 0
-     105 01101001  0.071   0 2
-     106 01101010  0.165   0 1
-     107 01101011  0.101   0 0
-     108 01101100  0.162   0 1
-     109 01101101  0.063   0 0
-     110 01101110  0.052   0 0
-     111 01101111  0.036   0 0
-     112 01110000  0.044   0 0
-     113 01110001  0.032   0 0
-     114 01110010  0.045   0 0
-     115 01110011  0.034   0 0
-     116 01110100  0.051   0 0
-     117 01110101  0.033   0 0
-     118 01110110  0.048   0 0
-     119 01110111  0.020   0 0
-     120 01111000  0.061   0 1
-     121 01111001  0.047   0 1
-     122 01111010  0.055   0 0
-     123 01111011  0.029   0 0
-     124 01111100  0.056   0 0
-     125 01111101  0.036   0 0
-     126 01111110  0.034   0 0
-     127 01111111  0.014   0 0
-    tried  128  missed:   0 {0: 106, 1: 12, 2: 6, 3: 3, 4: 1, 5: 0, 6: 0, 7: 0}
-
-
- From the list one can identify difficult combinations to train. If one runs them, sometimes it fails...
-
-
-```python
-lr = 1
-NN2 = setup_net()
-outputs = bbs_to_output('01101100')
-NN2.set_input(inputs, outputs)
-NN2.train(30000)
-NN2.plot_train_history()
-i=3
-NN2.set_input(inputs[i],outputs[i])
-NN2.forward()
-NN2.draw(outputs[i])
-```
-
-
-![png](README_files/README_11_0.png)
-
-
-
-![png](README_files/README_11_1.png)
-
-
-Now we will try so called few shot learning. As you can see from the training graph abough, usually the network uses every input output combination a very big number of times till the training is good. This is different from humans, which usualy learn a task with very few examples. We try this now
-
-
-```python
-multi_test = 30 
-%run -i _code_.py
-```
-
-      0 Label 00100001 Error  1.501     Ready   1
-      1 Label 01010010 Error  1.679     Ready   2
-      2 Label 00000100 Error  0.396     Ready   1
-      3 Label 00111100 Error  0.504     Ready   2
-      4 Label 00010001 Error  0.268     Ready   2
-      5 Label 01000011 Error  1.339     Ready   7
-      6 Label 01100001 Error  1.701     Ready   1
-      7 Label 00000000 Error  0.010     Ready   0
-      8 Label 00101000 Error  1.147     Ready   1
-      9 Label 00011110 Error  1.153     Ready   2
-     10 Label 01110001 Error  0.209     Ready   1
-     11 Label 00011111 Error  0.297     Ready   2
-     12 Label 01011110 Error  0.307     Ready   3
-     13 Label 01111001 Error  0.298     Ready   1
-     14 Label 01000110 Error  0.292     Ready   5
-     15 Label 00111111 Error  0.131     Ready   3
-     16 Label 01001100 Error  0.125     Ready   3
-     17 Label 01011111 Error  0.103     Ready   1
-     18 Label 00001011 Error  0.024     Ready   3
-     19 Label 00011100 Error  0.174     Ready   5
-     20 Label 01110101 Error  0.091     Ready   2
-     21 Label 00110101 Error  0.181     Ready   3
-     22 Label 01001010 Error  0.240     Ready   8
-     23 Label 00000110 Error  1.769     Ready  30
-     24 Label 01110001 Error  0.045     Ready   5
-     25 Label 00000001 Error  0.071     Ready   5
-     26 Label 00100011 Error  0.045     Ready   3
-     27 Label 00100101 Error  0.491     Ready   2
-     28 Label 00111010 Error  0.082     Ready   4
-     29 Label 01001011 Error  0.076     Ready   4
-     30 Label 00010101 Error  0.114     Ready   3
-
-
-
-![png](README_files/README_13_1.png)
-
-
-as you can see, with seeing every data point only a small number of times, this trains the model. We use a very simple straight forward approach. With one data point we do a training up to a treshold, than we take the next data point. From the table you can see, that most of the time the training is successfull, but sometimes it is not.
-
-In fact the training here is a little more improved: For every test we reinitialize the random weights of the last layer and train with a different randomly chosen output combination. We train the first layer with a slower learning rate, but this is not yet important. This simple examples work even without this additional improvments.
-
-Now we will start using emnist data, which will result in few shot learning of handwritten digit recognition.
-
-
-```python
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-based on: https://towardsdatascience.com/inroduction-to-neural-networks-in-python-7e0b422e6c24
-    and https://stackoverflow.com/questions/29888233/how-to-visualize-a-neural-network/29889993
-    and https://towardsdatascience.com/how-to-build-your-own-neural-network-from-scratch-in-python-68998a08e4f6
-    and https://www.python-course.eu/neural_network_mnist.php
-Created on Sun Jul 19 15:45:02 2020
-
-@author: detlef
-
-INSTALLATION:
-use it within anaconda and install cupy if cuda availible
-you will need https://www.python-course.eu/data/mnist/mnist_train.csv and https://www.python-course.eu/data/mnist/mnist_test.csv (mnist in csv) in the data/mnist subdirectory
-emnist not in anaconda at the moment, use pip install emnist
-
-on Google Colab (turn on GPU!!)
-!curl https://colab.chainer.org/install | sh -
-!pip install emnist
-
-REMARKS:
-    
-loss function used = 1/2 SUM(error**2) // making the derivative error
-"""
-
-import cupy as np # helps with the math (Cuda supported: faster for hidden_size > 256 probably and most mnist cases with batch training)
-#import numpy as np # helps with the math (if no Cuda is availible or size is small for simple tests)
-from matplotlib import pyplot
-from math import cos, sin, atan
-import random
-import pickle
-from datetime import datetime
-from tqdm import tqdm
-from emnist import extract_training_samples, extract_test_samples
-
-def np_array(x):
-    return np.array(x)# , dtype = np.float32) # float32 is 3 times faster on batch training with GTX1070Ti and 70 times faster than i7-4790K with float64, cpu does not help float32 a lot)
-check_for_nan = True
-
-pyplot.rcParams['figure.dpi'] = 150
-pyplot.interactive(False) # seems not to fix memory issue
-
-verbose = 0
-
-do_check_all = 0 #1000            # 0 to turn off
-check_output_limit = 128        # number of output combinations, as not every neural net is capable of learning input 0 0 0 -> output 1, if 128 the output to the first input is always 0    
-
-multi_test = -1 #1000             # -1 to turn off
-max_iter = 30
-
-hidden_size = 16
-two_hidden_layers = True
-use_bias = False
-
-lr = 2
-lr_few_shot = 0.5
-use_stability = False
-stability_mean = 0.1
-clip_weights = 1 # (clipping to 1 was used for most tests)
-clip_bias = 1
-init_rand_ampl = 0.1
-init_rand_ampl0 = 0.1 #2 # for first layer    (2 was used for most tests to make the first layer a mostly random layer)
-
-# drawing parameters
-scale_linewidth = 0.1
-weight_tanh_scale = 0.1
-scale_for_neuron_diff = 1
-
-scale_sigmoid = 3
-shift_sigmoid = 1
-
-few_shot_end = 0.2 # for early tests (no mnist)
-few_shot_max_try = 100
-few_shot_threshold_ratio = 1.5 # for mnist
-few_shot_threshold = 0.3
-
-# if 1 it is standard understanding of few shot learning, giving on data point at each shot, otherwize it adds more data points from availible training data to each shot
-few_shot_more_at_once = 5
-
-
-all_labels = [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
-# random.shuffle(all_labels)    # if shuffeld, preloading can not work !!!!!
-try_load_pretrained = True
-few_shot_fast_load_num = 4000 # should also handle the batch_sizes for displaying batch training results properly
-
-test_from_random_input = False
-i_bits = 16
-
-# input data
-inputs = np_array([[0, 0, 0],
-                   [0, 0, 1],
-                   [0, 1, 0],
-                   [0, 1, 1],
-                   [1, 0, 0],
-                   [1, 0, 1],
-                   [1, 1, 0],
-                   [1, 1, 1]])
-
-# output data
-outputs = np_array([[0], [0], [1], [0], [1], [1], [0], [1]])
-
-# swith to tanh and making input and output 1 -1 instead of 1 0
-do_pm = False
-
-use_emnist = True
-load_mnist = True
-
-do_batch_training = 100000
-do_drop_weights = [] # [0.9,0.9]
-initial_net_first_layer_slow_learning = 1 # 0.1 # most tests are done with 0.1 here, just try if it was really necessary
-
-first_n_to_use = 600000
-label_to_one = 5
-
-num_outputs = 10 # most early test need this to be 1, later with mnist dataset this can be set to 10 eg.
-
-try_mnist_few_shot = 10
-use_every_shot_n_times = 10 # every data is used n times. so one shot means the data from first shot is used n times
-change_first_layers_slow_learning = [0.1, 1] # [0, 0.1]
-
-
-disable_progressbar = False
-
-# uncomment to run in jupyter notebook
-%run -i _code_.py 
-```
-
-    Special few shot configuration, using additional data in every shot. Not the standard understanding of few shot!!!
-    labels (last two are used for few_shot) [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
-    Network parameters:  12960 dropped 0 real parameters 12960 drop definition []
-    loaded pretrained net !!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
-
-
-![png](README_files/README_15_1.png)
-
-
-    train 4000 batch_size 1000 correct 983.0 of 1000 Ratio 0.983 Error 0.025738144898819742
-    test 4000 batch_size 1000 correct 969.0 of 1000 Ratio 0.969 Error 0.04327703321805649
-    Testing if new lables were not learned !!!!!!!!!
-    new   4000 batch_size 1000 correct 0.0 of 1000 Ratio 0.0 Error 1.5863892075271515
-    few shot accuracy results
-    shot     try       old labels            new labels  new labels (forced)              over all
-       1      1             0.752                 0.493                0.702                 0.697
-       1      2             0.759                 0.513                0.711                 0.702
-       1      3             0.764                 0.517                0.711                 0.708
-       1      4             0.771                 0.517                0.711                 0.714
-       1      5             0.784                 0.515                0.709                 0.723
-       1      6             0.815                 0.505                0.700                 0.744
-       1      7             0.843                 0.494                0.694                 0.764
-       1      8             0.864                 0.483                0.677                 0.780
-       1      9             0.881                 0.469                0.673                 0.795
-       1     10             0.891                 0.457                0.664                 0.802
-       2      1             0.651                 0.711                0.780                 0.655
-       2      2             0.700                 0.660                0.780                 0.678
-       2      3             0.651                 0.580                0.675                 0.628
-       2      4             0.689                 0.607                0.741                 0.656
-       2      5             0.724                 0.599                0.787                 0.680
-       2      6             0.745                 0.566                0.792                 0.697
-       2      7             0.742                 0.546                0.796                 0.693
-       2      8             0.726                 0.540                0.792                 0.674
-       2      9             0.711                 0.529                0.795                 0.660
-       2     10             0.708                 0.502                0.791                 0.655
-       3      1             0.818                 0.411                0.586                 0.739
-       3      2             0.845                 0.431                0.672                 0.759
-       3      3             0.837                 0.442                0.662                 0.753
-       3      4             0.835                 0.442                0.660                 0.750
-       3      5             0.836                 0.442                0.661                 0.752
-       3      6             0.840                 0.443                0.662                 0.757
-       3      7             0.844                 0.439                0.664                 0.759
-       3      8             0.846                 0.438                0.666                 0.761
-       3      9             0.852                 0.434                0.668                 0.765
-       3     10             0.854                 0.438                0.675                 0.769
-       4      1             0.889                 0.544                0.763                 0.820
-       4      2             0.881                 0.581                0.796                 0.822
-       4      3             0.871                 0.611                0.826                 0.814
-       4      4             0.855                 0.624                0.838                 0.805
-       4      5             0.848                 0.657                0.844                 0.803
-       4      6             0.842                 0.668                0.843                 0.800
-       4      7             0.839                 0.679                0.849                 0.800
-       4      8             0.832                 0.686                0.850                 0.798
-       4      9             0.833                 0.688                0.850                 0.800
-       4     10             0.830                 0.686                0.850                 0.798
-       5      1             0.670                 0.788                0.839                 0.684
-       5      2             0.694                 0.797                0.859                 0.710
-       5      3             0.699                 0.804                0.866                 0.712
-       5      4             0.698                 0.805                0.867                 0.711
-       5      5             0.698                 0.810                0.870                 0.713
-       5      6             0.696                 0.814                0.874                 0.712
-       5      7             0.693                 0.814                0.877                 0.709
-       5      8             0.690                 0.813                0.876                 0.707
-       5      9             0.683                 0.812                0.875                 0.702
-       5     10             0.679                 0.810                0.874                 0.697
-       6      1             0.679                 0.641                0.807                 0.656
-       6      2             0.713                 0.675                0.847                 0.692
-       6      3             0.706                 0.677                0.858                 0.687
-       6      4             0.697                 0.681                0.865                 0.680
-       6      5             0.697                 0.692                0.871                 0.680
-       6      6             0.697                 0.690                0.874                 0.679
-       6      7             0.695                 0.684                0.869                 0.677
-       6      8             0.686                 0.687                0.872                 0.670
-       6      9             0.679                 0.683                0.872                 0.664
-       6     10             0.674                 0.677                0.872                 0.659
-       7      1             0.834                 0.516                0.602                 0.772
-       7      2             0.816                 0.606                0.709                 0.768
-       7      3             0.824                 0.631                0.743                 0.775
-       7      4             0.829                 0.693                0.823                 0.790
-       7      5             0.837                 0.709                0.864                 0.797
-       7      6             0.826                 0.708                0.870                 0.788
-       7      7             0.817                 0.712                0.873                 0.780
-       7      8             0.815                 0.723                0.872                 0.787
-       7      9             0.815                 0.726                0.872                 0.788
-       7     10             0.814                 0.727                0.872                 0.787
-       8      1             0.796                 0.770                0.875                 0.786
-       8      2             0.801                 0.768                0.882                 0.787
-       8      3             0.800                 0.767                0.887                 0.788
-       8      4             0.798                 0.768                0.895                 0.787
-       8      5             0.798                 0.769                0.897                 0.787
-       8      6             0.799                 0.773                0.901                 0.789
-       8      7             0.800                 0.774                0.902                 0.790
-       8      8             0.800                 0.774                0.900                 0.790
-       8      9             0.799                 0.771                0.899                 0.788
-       8     10             0.801                 0.771                0.900                 0.790
-       9      1             0.770                 0.770                0.909                 0.761
-       9      2             0.739                 0.814                0.906                 0.739
-       9      3             0.750                 0.803                0.905                 0.746
-       9      4             0.749                 0.795                0.905                 0.747
-       9      5             0.747                 0.792                0.904                 0.745
-       9      6             0.744                 0.789                0.904                 0.742
-       9      7             0.745                 0.787                0.904                 0.743
-       9      8             0.741                 0.784                0.902                 0.740
-       9      9             0.740                 0.784                0.902                 0.740
-       9     10             0.740                 0.783                0.901                 0.740
-      10      1             0.816                 0.795                0.891                 0.808
-      10      2             0.841                 0.774                0.896                 0.821
-      10      3             0.848                 0.765                0.893                 0.825
-      10      4             0.849                 0.762                0.893                 0.822
-      10      5             0.848                 0.764                0.892                 0.821
-      10      6             0.850                 0.759                0.893                 0.822
-      10      7             0.851                 0.758                0.893                 0.823
-      10      8             0.851                 0.756                0.893                 0.823
-      10      9             0.851                 0.758                0.893                 0.825
-      10     10             0.852                 0.758                0.894                 0.825
-
-
-It helps a lot to use the new data points more than once for training. Before same datapoints of the two new labels were used 10 times (counted as one shot, as it is really only one new information used). Using each new dataset only once results in a much lower performance:
-
-
-```python
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-based on: https://towardsdatascience.com/inroduction-to-neural-networks-in-python-7e0b422e6c24
-    and https://stackoverflow.com/questions/29888233/how-to-visualize-a-neural-network/29889993
-    and https://towardsdatascience.com/how-to-build-your-own-neural-network-from-scratch-in-python-68998a08e4f6
-    and https://www.python-course.eu/neural_network_mnist.php
-Created on Sun Jul 19 15:45:02 2020
-
-@author: detlef
-
-INSTALLATION:
-use it within anaconda and install cupy if cuda availible
-you will need https://www.python-course.eu/data/mnist/mnist_train.csv and https://www.python-course.eu/data/mnist/mnist_test.csv (mnist in csv) in the data/mnist subdirectory
-emnist not in anaconda at the moment, use pip install emnist
-
-on Google Colab (turn on GPU!!)
-!curl https://colab.chainer.org/install | sh -
-!pip install emnist
-
-REMARKS:
-    
-loss function used = 1/2 SUM(error**2) // making the derivative error
-"""
-
-import cupy as np # helps with the math (Cuda supported: faster for hidden_size > 256 probably and most mnist cases with batch training)
-#import numpy as np # helps with the math (if no Cuda is availible or size is small for simple tests)
-from matplotlib import pyplot
-from math import cos, sin, atan
-import random
-import pickle
-from datetime import datetime
-from tqdm import tqdm
-from emnist import extract_training_samples, extract_test_samples
-
-def np_array(x):
-    return np.array(x)# , dtype = np.float32) # float32 is 3 times faster on batch training with GTX1070Ti and 70 times faster than i7-4790K with float64, cpu does not help float32 a lot)
-check_for_nan = True
-
-pyplot.rcParams['figure.dpi'] = 150
-pyplot.interactive(False) # seems not to fix memory issue
-
-verbose = 0
-
-do_check_all = 0 #1000            # 0 to turn off
-check_output_limit = 128        # number of output combinations, as not every neural net is capable of learning input 0 0 0 -> output 1, if 128 the output to the first input is always 0    
-
-multi_test = -1 #1000             # -1 to turn off
-max_iter = 30
-
-hidden_size = 16
-two_hidden_layers = True
-use_bias = False
-
-lr = 2
-lr_few_shot = 0.5
-use_stability = False
-stability_mean = 0.1
-clip_weights = 1 # (clipping to 1 was used for most tests)
-clip_bias = 1
-init_rand_ampl = 0.1
-init_rand_ampl0 = 0.1 #2 # for first layer    (2 was used for most tests to make the first layer a mostly random layer)
-
-# drawing parameters
-scale_linewidth = 0.1
-weight_tanh_scale = 0.1
-scale_for_neuron_diff = 1
-
-scale_sigmoid = 3
-shift_sigmoid = 1
-
-few_shot_end = 0.2 # for early tests (no mnist)
-few_shot_max_try = 100
-few_shot_threshold_ratio = 1.5 # for mnist
-few_shot_threshold = 0.3
-
-# if 1 it is standard understanding of few shot learning, giving on data point at each shot, otherwize it adds more data points from availible training data to each shot
-few_shot_more_at_once = 5
-
-
-all_labels = [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
-# random.shuffle(all_labels)    # if shuffeld, preloading can not work !!!!!
-try_load_pretrained = True
-few_shot_fast_load_num = 4000 # should also handle the batch_sizes for displaying batch training results properly
-
-test_from_random_input = False
-i_bits = 16
-
-# input data
-inputs = np_array([[0, 0, 0],
-                   [0, 0, 1],
-                   [0, 1, 0],
-                   [0, 1, 1],
-                   [1, 0, 0],
-                   [1, 0, 1],
-                   [1, 1, 0],
-                   [1, 1, 1]])
-
-# output data
-outputs = np_array([[0], [0], [1], [0], [1], [1], [0], [1]])
-
-# swith to tanh and making input and output 1 -1 instead of 1 0
-do_pm = False
-
-use_emnist = True
-load_mnist = True
-
-do_batch_training = 100000
-do_drop_weights = [] # [0.9,0.9]
-initial_net_first_layer_slow_learning = 1 # 0.1 # most tests are done with 0.1 here, just try if it was really necessary
-
-first_n_to_use = 600000
-label_to_one = 5
-
-num_outputs = 10 # most early test need this to be 1, later with mnist dataset this can be set to 10 eg.
-
-try_mnist_few_shot = 10
-use_every_shot_n_times = 1 # every data is used n times. so one shot means the data from first shot is used n times
-change_first_layers_slow_learning = [0.1, 1] # [0, 0.1]
-
-
-disable_progressbar = False
-
-# uncomment to run in jupyter notebook
-%run -i _code_.py 
-```
-
-    Special few shot configuration, using additional data in every shot. Not the standard understanding of few shot!!!
-    labels (last two are used for few_shot) [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
-    Network parameters:  12960 dropped 0 real parameters 12960 drop definition []
-    loaded pretrained net !!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
-
-
-![png](README_files/README_17_1.png)
-
-
-    train 4000 batch_size 1000 correct 983.0 of 1000 Ratio 0.983 Error 0.025738144898819742
-    test 4000 batch_size 1000 correct 969.0 of 1000 Ratio 0.969 Error 0.04327703321805649
-    Testing if new lables were not learned !!!!!!!!!
-    new   4000 batch_size 1000 correct 0.0 of 1000 Ratio 0.0 Error 1.5863892075271515
-    few shot accuracy results
-    shot     try       old labels            new labels  new labels (forced)              over all
-       1      1             0.752                 0.493                0.702                 0.697
-       2      1             0.627                 0.715                0.791                 0.637
-       3      1             0.812                 0.469                0.524                 0.759
-       4      1             0.871                 0.485                0.622                 0.799
-       5      1             0.670                 0.771                0.812                 0.688
-       6      1             0.692                 0.498                0.813                 0.639
-       7      1             0.883                 0.450                0.581                 0.803
-       8      1             0.785                 0.671                0.771                 0.769
-       9      1             0.743                 0.563                0.828                 0.699
-      10      1             0.740                 0.652                0.797                 0.721
-
-
-Even using it twice is comparable to using it 10 times:
-
-
-```python
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-based on: https://towardsdatascience.com/inroduction-to-neural-networks-in-python-7e0b422e6c24
-    and https://stackoverflow.com/questions/29888233/how-to-visualize-a-neural-network/29889993
-    and https://towardsdatascience.com/how-to-build-your-own-neural-network-from-scratch-in-python-68998a08e4f6
-    and https://www.python-course.eu/neural_network_mnist.php
-Created on Sun Jul 19 15:45:02 2020
-
-@author: detlef
-
-INSTALLATION:
-use it within anaconda and install cupy if cuda availible
-you will need https://www.python-course.eu/data/mnist/mnist_train.csv and https://www.python-course.eu/data/mnist/mnist_test.csv (mnist in csv) in the data/mnist subdirectory
-emnist not in anaconda at the moment, use pip install emnist
-
-on Google Colab (turn on GPU!!)
-!curl https://colab.chainer.org/install | sh -
-!pip install emnist
-
-REMARKS:
-    
-loss function used = 1/2 SUM(error**2) // making the derivative error
-"""
-
-import cupy as np # helps with the math (Cuda supported: faster for hidden_size > 256 probably and most mnist cases with batch training)
-#import numpy as np # helps with the math (if no Cuda is availible or size is small for simple tests)
-from matplotlib import pyplot
-from math import cos, sin, atan
-import random
-import pickle
-from datetime import datetime
-from tqdm import tqdm
-from emnist import extract_training_samples, extract_test_samples
-
-def np_array(x):
-    return np.array(x)# , dtype = np.float32) # float32 is 3 times faster on batch training with GTX1070Ti and 70 times faster than i7-4790K with float64, cpu does not help float32 a lot)
-check_for_nan = True
-
-pyplot.rcParams['figure.dpi'] = 150
-pyplot.interactive(False) # seems not to fix memory issue
-
-verbose = 0
-
-do_check_all = 0 #1000            # 0 to turn off
-check_output_limit = 128        # number of output combinations, as not every neural net is capable of learning input 0 0 0 -> output 1, if 128 the output to the first input is always 0    
-
-multi_test = -1 #1000             # -1 to turn off
-max_iter = 30
-
-hidden_size = 16
-two_hidden_layers = True
-use_bias = False
-
-lr = 2
-lr_few_shot = 0.5
-use_stability = False
-stability_mean = 0.1
-clip_weights = 1 # (clipping to 1 was used for most tests)
-clip_bias = 1
-init_rand_ampl = 0.1
-init_rand_ampl0 = 0.1 #2 # for first layer    (2 was used for most tests to make the first layer a mostly random layer)
-
-# drawing parameters
-scale_linewidth = 0.1
-weight_tanh_scale = 0.1
-scale_for_neuron_diff = 1
-
-scale_sigmoid = 3
-shift_sigmoid = 1
-
-few_shot_end = 0.2 # for early tests (no mnist)
-few_shot_max_try = 100
-few_shot_threshold_ratio = 1.5 # for mnist
-few_shot_threshold = 0.3
-
-# if 1 it is standard understanding of few shot learning, giving on data point at each shot, otherwize it adds more data points from availible training data to each shot
-few_shot_more_at_once = 5
-
-
-all_labels = [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
-# random.shuffle(all_labels)    # if shuffeld, preloading can not work !!!!!
-try_load_pretrained = True
-few_shot_fast_load_num = 4000 # should also handle the batch_sizes for displaying batch training results properly
-
-test_from_random_input = False
-i_bits = 16
-
-# input data
-inputs = np_array([[0, 0, 0],
-                   [0, 0, 1],
-                   [0, 1, 0],
-                   [0, 1, 1],
-                   [1, 0, 0],
-                   [1, 0, 1],
-                   [1, 1, 0],
-                   [1, 1, 1]])
-
-# output data
-outputs = np_array([[0], [0], [1], [0], [1], [1], [0], [1]])
-
-# swith to tanh and making input and output 1 -1 instead of 1 0
-do_pm = False
-
-use_emnist = True
-load_mnist = True
-
-do_batch_training = 100000
-do_drop_weights = [] # [0.9,0.9]
-initial_net_first_layer_slow_learning = 1 # 0.1 # most tests are done with 0.1 here, just try if it was really necessary
-
-first_n_to_use = 600000
-label_to_one = 5
-
-num_outputs = 10 # most early test need this to be 1, later with mnist dataset this can be set to 10 eg.
-
-try_mnist_few_shot = 10
-use_every_shot_n_times = 2 # every data is used n times. so one shot means the data from first shot is used n times
-change_first_layers_slow_learning = [0.1, 1] # [0, 0.1]
-
-
-disable_progressbar = False
-
-# uncomment to run in jupyter notebook
-%run -i _code_.py 
-```
-
-    Special few shot configuration, using additional data in every shot. Not the standard understanding of few shot!!!
-    labels (last two are used for few_shot) [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
-    Network parameters:  12960 dropped 0 real parameters 12960 drop definition []
-    loaded pretrained net !!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
-
-
-![png](README_files/README_19_1.png)
-
-
-    train 4000 batch_size 1000 correct 983.0 of 1000 Ratio 0.983 Error 0.025738144898819742
-    test 4000 batch_size 1000 correct 969.0 of 1000 Ratio 0.969 Error 0.04327703321805649
-    Testing if new lables were not learned !!!!!!!!!
-    new   4000 batch_size 1000 correct 0.0 of 1000 Ratio 0.0 Error 1.5863892075271515
-    few shot accuracy results
-    shot     try       old labels            new labels  new labels (forced)              over all
-       1      1             0.752                 0.493                0.702                 0.697
-       1      2             0.759                 0.513                0.711                 0.702
-       2      1             0.646                 0.691                0.779                 0.649
-       2      2             0.701                 0.598                0.784                 0.664
-       3      1             0.853                 0.434                0.528                 0.781
-       3      2             0.882                 0.411                0.600                 0.788
-       4      1             0.897                 0.454                0.643                 0.809
-       4      2             0.895                 0.470                0.655                 0.812
-       5      1             0.694                 0.714                0.767                 0.698
-       5      2             0.680                 0.758                0.807                 0.694
-       6      1             0.644                 0.568                0.784                 0.622
-       6      2             0.671                 0.603                0.802                 0.652
-       7      1             0.842                 0.483                0.570                 0.779
-       7      2             0.846                 0.536                0.635                 0.794
-       8      1             0.778                 0.670                0.771                 0.762
-       8      2             0.784                 0.708                0.814                 0.778
-       9      1             0.807                 0.671                0.838                 0.765
-       9      2             0.789                 0.698                0.835                 0.755
-      10      1             0.814                 0.717                0.818                 0.798
-      10      2             0.840                 0.678                0.825                 0.812
-
-
-
-```python
-Testing with a size of 64 for the hidden layers:
-```
-
-
-      File "<ipython-input-3-7e51721897ee>", line 1
-        Testing with a size of 64 for the hidden layers:
-                   ^
-    SyntaxError: invalid syntax
-
+    Overwriting _code_.py
 
 
 
@@ -1059,418 +100,7 @@ few_shot_threshold = 0.3
 
 # if 1 it is standard understanding of few shot learning, giving on data point at each shot, otherwize it adds more data points from availible training data to each shot
 few_shot_more_at_once = 5
-
-
-all_labels = [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
-# random.shuffle(all_labels)    # if shuffeld, preloading can not work !!!!!
-try_load_pretrained = True
-few_shot_fast_load_num = 4000 # should also handle the batch_sizes for displaying batch training results properly
-
-test_from_random_input = False
-i_bits = 16
-
-# input data
-inputs = np_array([[0, 0, 0],
-                   [0, 0, 1],
-                   [0, 1, 0],
-                   [0, 1, 1],
-                   [1, 0, 0],
-                   [1, 0, 1],
-                   [1, 1, 0],
-                   [1, 1, 1]])
-
-# output data
-outputs = np_array([[0], [0], [1], [0], [1], [1], [0], [1]])
-
-# swith to tanh and making input and output 1 -1 instead of 1 0
-do_pm = False
-
-use_emnist = True
-load_mnist = True
-
-do_batch_training = 100000
-do_drop_weights = [] # [0.9,0.9]
-initial_net_first_layer_slow_learning = 1 # 0.1 # most tests are done with 0.1 here, just try if it was really necessary
-
-first_n_to_use = 600000
-label_to_one = 5
-
-num_outputs = 10 # most early test need this to be 1, later with mnist dataset this can be set to 10 eg.
-
-try_mnist_few_shot = 10
-use_every_shot_n_times = 10 # every data is used n times. so one shot means the data from first shot is used n times
-change_first_layers_slow_learning = [0.1, 1] # [0, 0.1]
-
-
-disable_progressbar = False
-
-# uncomment to run in jupyter notebook
-%run -i _code_.py 
-```
-
-    Special few shot configuration, using additional data in every shot. Not the standard understanding of few shot!!!
-    labels (last two are used for few_shot) [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
-    Network parameters:  54912 dropped 0 real parameters 54912 drop definition []
-    loaded pretrained net !!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
-
-
-![png](README_files/README_21_1.png)
-
-
-    train 4000 batch_size 1000 correct 999.0 of 1000 Ratio 0.999 Error 0.002056176738317593
-    test 4000 batch_size 1000 correct 989.0 of 1000 Ratio 0.989 Error 0.017220532802572196
-    Testing if new lables were not learned !!!!!!!!!
-    new   4000 batch_size 1000 correct 0.0 of 1000 Ratio 0.0 Error 1.6742333548219135
-    few shot accuracy results
-    shot     try       old labels            new labels  new labels (forced)              over all
-       1      1             0.919                 0.565                0.758                 0.855
-       1      2             0.951                 0.436                0.703                 0.861
-       1      3             0.954                 0.458                0.744                 0.865
-       1      4             0.953                 0.456                0.745                 0.862
-       1      5             0.952                 0.454                0.742                 0.860
-       1      6             0.952                 0.454                0.740                 0.861
-       1      7             0.953                 0.452                0.736                 0.861
-       1      8             0.953                 0.451                0.738                 0.860
-       1      9             0.953                 0.451                0.739                 0.860
-       1     10             0.953                 0.452                0.738                 0.862
-       2      1             0.883                 0.641                0.768                 0.835
-       2      2             0.902                 0.635                0.777                 0.851
-       2      3             0.904                 0.627                0.775                 0.852
-       2      4             0.905                 0.626                0.781                 0.853
-       2      5             0.906                 0.630                0.780                 0.854
-       2      6             0.907                 0.627                0.780                 0.854
-       2      7             0.906                 0.629                0.775                 0.853
-       2      8             0.906                 0.634                0.771                 0.855
-       2      9             0.901                 0.635                0.769                 0.850
-       2     10             0.895                 0.628                0.752                 0.844
-       3      1             0.941                 0.488                0.799                 0.856
-       3      2             0.925                 0.588                0.846                 0.863
-       3      3             0.927                 0.600                0.857                 0.864
-       3      4             0.923                 0.608                0.857                 0.865
-       3      5             0.919                 0.610                0.855                 0.862
-       3      6             0.919                 0.609                0.852                 0.861
-       3      7             0.916                 0.609                0.849                 0.858
-       3      8             0.916                 0.610                0.849                 0.858
-       3      9             0.914                 0.610                0.848                 0.857
-       3     10             0.913                 0.610                0.849                 0.856
-       4      1             0.905                 0.643                0.828                 0.851
-       4      2             0.904                 0.637                0.857                 0.850
-       4      3             0.905                 0.634                0.845                 0.853
-       4      4             0.905                 0.629                0.842                 0.850
-       4      5             0.914                 0.532                0.807                 0.840
-       4      6             0.921                 0.671                0.833                 0.869
-       4      7             0.920                 0.669                0.833                 0.868
-       4      8             0.920                 0.667                0.833                 0.869
-       4      9             0.919                 0.666                0.831                 0.868
-       4     10             0.919                 0.667                0.829                 0.868
-       5      1             0.863                 0.636                0.744                 0.827
-       5      2             0.908                 0.716                0.874                 0.864
-       5      3             0.891                 0.717                0.858                 0.852
-       5      4             0.895                 0.713                0.852                 0.852
-       5      5             0.894                 0.710                0.851                 0.851
-       5      6             0.895                 0.710                0.852                 0.854
-       5      7             0.896                 0.710                0.852                 0.855
-       5      8             0.896                 0.712                0.850                 0.856
-       5      9             0.895                 0.713                0.851                 0.856
-       5     10             0.895                 0.714                0.850                 0.856
-       6      1             0.950                 0.749                0.895                 0.912
-       6      2             0.955                 0.729                0.903                 0.911
-       6      3             0.958                 0.719                0.904                 0.914
-       6      4             0.958                 0.726                0.908                 0.917
-       6      5             0.958                 0.726                0.908                 0.917
-       6      6             0.957                 0.729                0.910                 0.917
-       6      7             0.957                 0.731                0.911                 0.918
-       6      8             0.957                 0.729                0.910                 0.918
-       6      9             0.957                 0.731                0.909                 0.918
-       6     10             0.957                 0.733                0.910                 0.919
-       7      1             0.962                 0.693                0.924                 0.914
-       7      2             0.955                 0.703                0.886                 0.911
-       7      3             0.956                 0.704                0.891                 0.912
-       7      4             0.955                 0.707                0.897                 0.911
-       7      5             0.955                 0.707                0.897                 0.911
-       7      6             0.955                 0.708                0.897                 0.911
-       7      7             0.953                 0.709                0.897                 0.909
-       7      8             0.953                 0.713                0.897                 0.909
-       7      9             0.953                 0.714                0.896                 0.909
-       7     10             0.953                 0.714                0.896                 0.909
-       8      1             0.948                 0.716                0.920                 0.903
-       8      2             0.943                 0.717                0.908                 0.897
-       8      3             0.944                 0.712                0.909                 0.898
-       8      4             0.943                 0.710                0.909                 0.896
-       8      5             0.943                 0.706                0.907                 0.895
-       8      6             0.943                 0.707                0.906                 0.895
-       8      7             0.943                 0.701                0.906                 0.894
-       8      8             0.943                 0.700                0.906                 0.895
-       8      9             0.943                 0.701                0.904                 0.896
-       8     10             0.943                 0.701                0.904                 0.896
-       9      1             0.921                 0.756                0.909                 0.883
-       9      2             0.925                 0.756                0.907                 0.887
-       9      3             0.927                 0.757                0.909                 0.889
-       9      4             0.928                 0.757                0.909                 0.890
-       9      5             0.929                 0.754                0.909                 0.891
-       9      6             0.929                 0.754                0.910                 0.891
-       9      7             0.929                 0.754                0.911                 0.891
-       9      8             0.929                 0.753                0.910                 0.891
-       9      9             0.929                 0.752                0.909                 0.891
-       9     10             0.928                 0.750                0.909                 0.889
-      10      1             0.910                 0.741                0.882                 0.872
-      10      2             0.923                 0.747                0.900                 0.886
-      10      3             0.927                 0.747                0.903                 0.889
-      10      4             0.927                 0.746                0.904                 0.889
-      10      5             0.930                 0.747                0.905                 0.892
-      10      6             0.931                 0.746                0.906                 0.893
-      10      7             0.931                 0.745                0.906                 0.893
-      10      8             0.931                 0.746                0.907                 0.893
-      10      9             0.931                 0.746                0.907                 0.892
-      10     10             0.931                 0.747                0.908                 0.892
-
-
-And trying only using every shot once for the net with hidden layer size 64
-
-
-```python
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-based on: https://towardsdatascience.com/inroduction-to-neural-networks-in-python-7e0b422e6c24
-    and https://stackoverflow.com/questions/29888233/how-to-visualize-a-neural-network/29889993
-    and https://towardsdatascience.com/how-to-build-your-own-neural-network-from-scratch-in-python-68998a08e4f6
-    and https://www.python-course.eu/neural_network_mnist.php
-Created on Sun Jul 19 15:45:02 2020
-
-@author: detlef
-
-INSTALLATION:
-use it within anaconda and install cupy if cuda availible
-you will need https://www.python-course.eu/data/mnist/mnist_train.csv and https://www.python-course.eu/data/mnist/mnist_test.csv (mnist in csv) in the data/mnist subdirectory
-emnist not in anaconda at the moment, use pip install emnist
-
-on Google Colab (turn on GPU!!)
-!curl https://colab.chainer.org/install | sh -
-!pip install emnist
-
-REMARKS:
-    
-loss function used = 1/2 SUM(error**2) // making the derivative error
-"""
-
-import cupy as np # helps with the math (Cuda supported: faster for hidden_size > 256 probably and most mnist cases with batch training)
-#import numpy as np # helps with the math (if no Cuda is availible or size is small for simple tests)
-from matplotlib import pyplot
-from math import cos, sin, atan
-import random
-import pickle
-from datetime import datetime
-from tqdm import tqdm
-from emnist import extract_training_samples, extract_test_samples
-
-def np_array(x):
-    return np.array(x)# , dtype = np.float32) # float32 is 3 times faster on batch training with GTX1070Ti and 70 times faster than i7-4790K with float64, cpu does not help float32 a lot)
-check_for_nan = True
-
-pyplot.rcParams['figure.dpi'] = 150
-pyplot.interactive(False) # seems not to fix memory issue
-
-verbose = 0
-
-do_check_all = 0 #1000            # 0 to turn off
-check_output_limit = 128        # number of output combinations, as not every neural net is capable of learning input 0 0 0 -> output 1, if 128 the output to the first input is always 0    
-
-multi_test = -1 #1000             # -1 to turn off
-max_iter = 30
-
-hidden_size = 64
-two_hidden_layers = True
-use_bias = False
-
-lr = 2
-lr_few_shot = 0.5
-use_stability = False
-stability_mean = 0.1
-clip_weights = 1 # (clipping to 1 was used for most tests)
-clip_bias = 1
-init_rand_ampl = 0.1
-init_rand_ampl0 = 0.1 #2 # for first layer    (2 was used for most tests to make the first layer a mostly random layer)
-
-# drawing parameters
-scale_linewidth = 0.1
-weight_tanh_scale = 0.1
-scale_for_neuron_diff = 1
-
-scale_sigmoid = 3
-shift_sigmoid = 1
-
-few_shot_end = 0.2 # for early tests (no mnist)
-few_shot_max_try = 100
-few_shot_threshold_ratio = 1.5 # for mnist
-few_shot_threshold = 0.3
-
-# if 1 it is standard understanding of few shot learning, giving on data point at each shot, otherwize it adds more data points from availible training data to each shot
-few_shot_more_at_once = 5
-
-
-all_labels = [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
-# random.shuffle(all_labels)    # if shuffeld, preloading can not work !!!!!
-try_load_pretrained = True
-few_shot_fast_load_num = 4000 # should also handle the batch_sizes for displaying batch training results properly
-
-test_from_random_input = False
-i_bits = 16
-
-# input data
-inputs = np_array([[0, 0, 0],
-                   [0, 0, 1],
-                   [0, 1, 0],
-                   [0, 1, 1],
-                   [1, 0, 0],
-                   [1, 0, 1],
-                   [1, 1, 0],
-                   [1, 1, 1]])
-
-# output data
-outputs = np_array([[0], [0], [1], [0], [1], [1], [0], [1]])
-
-# swith to tanh and making input and output 1 -1 instead of 1 0
-do_pm = False
-
-use_emnist = True
-load_mnist = True
-
-do_batch_training = 100000
-do_drop_weights = [] # [0.9,0.9]
-initial_net_first_layer_slow_learning = 1 # 0.1 # most tests are done with 0.1 here, just try if it was really necessary
-
-first_n_to_use = 600000
-label_to_one = 5
-
-num_outputs = 10 # most early test need this to be 1, later with mnist dataset this can be set to 10 eg.
-
-try_mnist_few_shot = 10
-use_every_shot_n_times = 1 # every data is used n times. so one shot means the data from first shot is used n times
-change_first_layers_slow_learning = [0.1, 1] # [0, 0.1]
-
-
-disable_progressbar = False
-
-# uncomment to run in jupyter notebook
-%run -i _code_.py 
-```
-
-    Special few shot configuration, using additional data in every shot. Not the standard understanding of few shot!!!
-    labels (last two are used for few_shot) [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
-    Network parameters:  54912 dropped 0 real parameters 54912 drop definition []
-    loaded pretrained net !!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
-
-
-![png](README_files/README_23_1.png)
-
-
-    train 4000 batch_size 1000 correct 999.0 of 1000 Ratio 0.999 Error 0.002056176738317593
-    test 4000 batch_size 1000 correct 989.0 of 1000 Ratio 0.989 Error 0.017220532802572196
-    Testing if new lables were not learned !!!!!!!!!
-    new   4000 batch_size 1000 correct 0.0 of 1000 Ratio 0.0 Error 1.6742333548219135
-    few shot accuracy results
-    shot     try       old labels            new labels  new labels (forced)              over all
-       1      1             0.919                 0.565                0.758                 0.855
-       2      1             0.831                 0.684                0.784                 0.805
-       3      1             0.929                 0.451                0.629                 0.844
-       4      1             0.932                 0.509                0.796                 0.853
-       5      1             0.840                 0.728                0.800                 0.817
-       6      1             0.946                 0.696                0.830                 0.897
-       7      1             0.953                 0.705                0.860                 0.907
-       8      1             0.938                 0.741                0.870                 0.896
-       9      1             0.935                 0.785                0.886                 0.899
-      10      1             0.944                 0.768                0.895                 0.912
-
-
-This is comparable to using every shot 10 times. Bigger nets seem to make less important to use every data point multiple times.
-
-Now we try with an even bigger net. The size of the hidden layers is 128:
-
-
-
-```python
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-based on: https://towardsdatascience.com/inroduction-to-neural-networks-in-python-7e0b422e6c24
-    and https://stackoverflow.com/questions/29888233/how-to-visualize-a-neural-network/29889993
-    and https://towardsdatascience.com/how-to-build-your-own-neural-network-from-scratch-in-python-68998a08e4f6
-    and https://www.python-course.eu/neural_network_mnist.php
-Created on Sun Jul 19 15:45:02 2020
-
-@author: detlef
-
-INSTALLATION:
-use it within anaconda and install cupy if cuda availible
-you will need https://www.python-course.eu/data/mnist/mnist_train.csv and https://www.python-course.eu/data/mnist/mnist_test.csv (mnist in csv) in the data/mnist subdirectory
-emnist not in anaconda at the moment, use pip install emnist
-
-on Google Colab (turn on GPU!!)
-!curl https://colab.chainer.org/install | sh -
-!pip install emnist
-
-REMARKS:
-    
-loss function used = 1/2 SUM(error**2) // making the derivative error
-"""
-
-import cupy as np # helps with the math (Cuda supported: faster for hidden_size > 256 probably and most mnist cases with batch training)
-#import numpy as np # helps with the math (if no Cuda is availible or size is small for simple tests)
-from matplotlib import pyplot
-from math import cos, sin, atan
-import random
-import pickle
-from datetime import datetime
-from tqdm import tqdm
-from emnist import extract_training_samples, extract_test_samples
-
-def np_array(x):
-    return np.array(x)# , dtype = np.float32) # float32 is 3 times faster on batch training with GTX1070Ti and 70 times faster than i7-4790K with float64, cpu does not help float32 a lot)
-check_for_nan = True
-
-pyplot.rcParams['figure.dpi'] = 150
-pyplot.interactive(False) # seems not to fix memory issue
-
-verbose = 0
-
-do_check_all = 0 #1000            # 0 to turn off
-check_output_limit = 128        # number of output combinations, as not every neural net is capable of learning input 0 0 0 -> output 1, if 128 the output to the first input is always 0    
-
-multi_test = -1 #1000             # -1 to turn off
-max_iter = 30
-
-hidden_size = 128
-two_hidden_layers = True
-use_bias = False
-
-lr = 2
-lr_few_shot = 0.5
-use_stability = False
-stability_mean = 0.1
-clip_weights = 1 # (clipping to 1 was used for most tests)
-clip_bias = 1
-init_rand_ampl = 0.1
-init_rand_ampl0 = 0.1 #2 # for first layer    (2 was used for most tests to make the first layer a mostly random layer)
-
-# drawing parameters
-scale_linewidth = 0.1
-weight_tanh_scale = 0.1
-scale_for_neuron_diff = 1
-
-scale_sigmoid = 3
-shift_sigmoid = 1
-
-few_shot_end = 0.2 # for early tests (no mnist)
-few_shot_max_try = 100
-few_shot_threshold_ratio = 1.5 # for mnist
-few_shot_threshold = 0.3
-
-# if 1 it is standard understanding of few shot learning, giving on data point at each shot, otherwize it adds more data points from availible training data to each shot
-few_shot_more_at_once = 5
-
+check_wrong = True
 
 all_labels = [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
 # random.shuffle(all_labels)    # if shuffeld, preloading can not work !!!!!
@@ -1509,8 +139,8 @@ label_to_one = 5
 num_outputs = 10 # most early test need this to be 1, later with mnist dataset this can be set to 10 eg.
 
 try_mnist_few_shot = 10
-use_every_shot_n_times = 10 # every data is used n times. so one shot means the data from first shot is used n times
-change_first_layers_slow_learning = [0.1, 1] # [0, 0.1]
+use_every_shot_n_times = 1 # every data is used n times. so one shot means the data from first shot is used n times
+change_first_layers_slow_learning = [0, 1] # [0, 0.1]
 
 
 disable_progressbar = False
@@ -1525,128 +155,382 @@ disable_progressbar = False
 
       0%|          | 0/100000 [00:00<?, ?it/s]
 
-    start 07:50:47
+    start 18:21:24
 
 
-    100%|██████████| 100000/100000 [2:48:09<00:00,  9.91it/s] 
+    Err  0.002: 100%|██████████| 100000/100000 [1:18:19<00:00, 21.28it/s]
 
 
-    end 10:38:57
+    end 19:39:44
 
 
 
-![png](README_files/README_25_5.png)
+![png](README_files/README_3_5.png)
 
 
-    train 192000 batch_size 1000 correct 1000.0 of 1000 Ratio 1.0 Error 3.221398914560528e-05
-    test 4000 batch_size 1000 correct 991.0 of 1000 Ratio 0.991 Error 0.014413614294520559
+    train 192000 batch_size 1000 correct 999.0 of 1000 Ratio 0.999 Error 0.0020608174511465515
+    test 4000 batch_size 1000 correct 989.0 of 1000 Ratio 0.989 Error 0.01950864256808672
     Testing if new lables were not learned !!!!!!!!!
-    new   4000 batch_size 1000 correct 0.0 of 1000 Ratio 0.0 Error 1.6693057776547948
+    new   4000 batch_size 1000 correct 0.0 of 1000 Ratio 0.0 Error 1.6566784770753793
     few shot accuracy results
     shot     try       old labels            new labels  new labels (forced)              over all
-       1      1             0.847                 0.454                0.528                 0.776
-       1      2             0.889                 0.435                0.520                 0.809
-       1      3             0.861                 0.479                0.536                 0.794
-       1      4             0.880                 0.488                0.560                 0.809
-       1      5             0.897                 0.529                0.615                 0.827
-       1      6             0.899                 0.526                0.613                 0.827
-       1      7             0.899                 0.523                0.610                 0.826
-       1      8             0.899                 0.521                0.610                 0.827
-       1      9             0.900                 0.521                0.610                 0.828
-       1     10             0.900                 0.522                0.611                 0.828
-       2      1             0.853                 0.622                0.680                 0.807
-       2      2             0.904                 0.643                0.723                 0.851
-       2      3             0.902                 0.652                0.733                 0.845
-       2      4             0.769                 0.504                0.516                 0.724
-       2      5             0.930                 0.587                0.772                 0.860
-       2      6             0.930                 0.577                0.768                 0.858
-       2      7             0.929                 0.572                0.765                 0.855
-       2      8             0.929                 0.573                0.764                 0.855
-       2      9             0.928                 0.573                0.764                 0.854
-       2     10             0.927                 0.573                0.766                 0.852
-       3      1             0.955                 0.482                0.584                 0.868
-       3      2             0.947                 0.607                0.696                 0.886
-       3      3             0.948                 0.688                0.796                 0.896
-       3      4             0.949                 0.690                0.801                 0.897
-       3      5             0.949                 0.697                0.809                 0.897
-       3      6             0.949                 0.699                0.812                 0.897
-       3      7             0.949                 0.701                0.815                 0.897
-       3      8             0.949                 0.703                0.817                 0.897
-       3      9             0.951                 0.703                0.818                 0.898
-       3     10             0.953                 0.706                0.821                 0.900
-       4      1             0.968                 0.579                0.858                 0.890
-       4      2             0.965                 0.591                0.853                 0.892
-       4      3             0.964                 0.605                0.854                 0.895
-       4      4             0.963                 0.610                0.854                 0.896
-       4      5             0.962                 0.613                0.854                 0.895
-       4      6             0.961                 0.615                0.854                 0.895
-       4      7             0.961                 0.616                0.855                 0.895
-       4      8             0.961                 0.618                0.854                 0.895
-       4      9             0.961                 0.620                0.852                 0.895
-       4     10             0.961                 0.624                0.853                 0.896
-       5      1             0.904                 0.864                0.900                 0.888
-       5      2             0.910                 0.867                0.909                 0.895
-       5      3             0.912                 0.860                0.902                 0.893
-       5      4             0.911                 0.861                0.903                 0.892
-       5      5             0.911                 0.863                0.906                 0.893
-       5      6             0.911                 0.864                0.907                 0.893
-       5      7             0.912                 0.864                0.907                 0.894
-       5      8             0.912                 0.866                0.908                 0.894
-       5      9             0.912                 0.866                0.909                 0.894
-       5     10             0.911                 0.866                0.909                 0.894
-       6      1             0.918                 0.845                0.890                 0.896
-       6      2             0.914                 0.884                0.923                 0.899
-       6      3             0.910                 0.884                0.917                 0.896
-       6      4             0.908                 0.886                0.918                 0.894
-       6      5             0.908                 0.892                0.923                 0.896
-       6      6             0.908                 0.893                0.924                 0.896
-       6      7             0.909                 0.893                0.924                 0.896
-       6      8             0.910                 0.894                0.924                 0.897
-       6      9             0.910                 0.894                0.925                 0.897
-       6     10             0.909                 0.894                0.925                 0.896
-       7      1             0.934                 0.686                0.878                 0.887
-       7      2             0.929                 0.820                0.911                 0.908
-       7      3             0.934                 0.816                0.910                 0.910
-       7      4             0.937                 0.816                0.910                 0.913
-       7      5             0.937                 0.814                0.909                 0.912
-       7      6             0.938                 0.811                0.910                 0.911
-       7      7             0.939                 0.811                0.910                 0.912
-       7      8             0.939                 0.810                0.908                 0.911
-       7      9             0.939                 0.810                0.907                 0.911
-       7     10             0.939                 0.810                0.907                 0.912
-       8      1             0.933                 0.786                0.856                 0.905
-       8      2             0.939                 0.834                0.928                 0.915
-       8      3             0.939                 0.837                0.933                 0.916
-       8      4             0.939                 0.839                0.935                 0.915
-       8      5             0.939                 0.839                0.935                 0.915
-       8      6             0.939                 0.841                0.935                 0.915
-       8      7             0.939                 0.842                0.935                 0.915
-       8      8             0.939                 0.842                0.935                 0.915
-       8      9             0.939                 0.843                0.936                 0.915
-       8     10             0.939                 0.843                0.935                 0.916
-       9      1             0.903                 0.896                0.952                 0.899
-       9      2             0.883                 0.882                0.934                 0.875
-       9      3             0.884                 0.886                0.936                 0.877
-       9      4             0.886                 0.887                0.938                 0.880
-       9      5             0.887                 0.885                0.938                 0.881
-       9      6             0.887                 0.885                0.938                 0.881
-       9      7             0.887                 0.884                0.937                 0.881
-       9      8             0.888                 0.884                0.937                 0.882
-       9      9             0.890                 0.885                0.938                 0.883
-       9     10             0.890                 0.885                0.938                 0.883
-      10      1             0.903                 0.854                0.945                 0.892
-      10      2             0.907                 0.861                0.949                 0.897
-      10      3             0.908                 0.865                0.949                 0.899
-      10      4             0.908                 0.866                0.949                 0.899
-      10      5             0.907                 0.868                0.950                 0.898
-      10      6             0.908                 0.868                0.950                 0.899
-      10      7             0.907                 0.869                0.950                 0.898
-      10      8             0.909                 0.870                0.950                 0.899
-      10      9             0.910                 0.870                0.950                 0.900
-      10     10             0.912                 0.871                0.950                 0.902
+       1      1             0.895                 0.492                0.776                 0.815
+       2      1             0.952                 0.574                0.754                 0.879
+       3      1             0.950                 0.521                0.667                 0.870
+       4      1             0.960                 0.535                0.730                 0.878
+       5      1             0.856                 0.621                0.677                 0.818
+       6      1             0.961                 0.708                0.839                 0.905
+       7      1             0.958                 0.666                0.806                 0.900
+       8      1             0.949                 0.747                0.844                 0.911
+       9      1             0.954                 0.811                0.918                 0.923
+      10      1             0.926                 0.836                0.919                 0.908
 
 
-And trying using every shot only once:
+
+```python
+<div class="burk">
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+based on: https://towardsdatascience.com/inroduction-to-neural-networks-in-python-7e0b422e6c24
+    and https://stackoverflow.com/questions/29888233/how-to-visualize-a-neural-network/29889993
+    and https://towardsdatascience.com/how-to-build-your-own-neural-network-from-scratch-in-python-68998a08e4f6
+    and https://www.python-course.eu/neural_network_mnist.php
+Created on Sun Jul 19 15:45:02 2020
+
+@author: detlef
+
+INSTALLATION:
+use it within anaconda and install cupy if cuda availible
+you will need https://www.python-course.eu/data/mnist/mnist_train.csv and https://www.python-course.eu/data/mnist/mnist_test.csv (mnist in csv) in the data/mnist subdirectory
+emnist not in anaconda at the moment, use pip install emnist
+
+on Google Colab (turn on GPU!!)
+!curl https://colab.chainer.org/install | sh -
+!pip install emnist
+
+REMARKS:
+    
+loss function used = 1/2 SUM(error**2) // making the derivative error
+"""
+
+import cupy as np # helps with the math (Cuda supported: faster for hidden_size > 256 probably and most mnist cases with batch training)
+#import numpy as np # helps with the math (if no Cuda is availible or size is small for simple tests)
+from matplotlib import pyplot
+from math import cos, sin, atan
+import random
+import pickle
+from datetime import datetime
+from tqdm import tqdm
+from emnist import extract_training_samples, extract_test_samples
+
+def np_array(x):
+    return np.array(x)# , dtype = np.float32) # float32 is 3 times faster on batch training with GTX1070Ti and 70 times faster than i7-4790K with float64, cpu does not help float32 a lot)
+check_for_nan = True
+
+pyplot.rcParams['figure.dpi'] = 150
+pyplot.interactive(False) # seems not to fix memory issue
+
+verbose = 0
+
+do_check_all = 0 #1000            # 0 to turn off
+check_output_limit = 128        # number of output combinations, as not every neural net is capable of learning input 0 0 0 -> output 1, if 128 the output to the first input is always 0    
+
+multi_test = -1 #1000             # -1 to turn off
+max_iter = 30
+
+hidden_size = 64
+two_hidden_layers = True
+use_bias = False
+
+lr = 2
+lr_few_shot = 0.5
+use_stability = False
+stability_mean = 0.1
+clip_weights = 1 # (clipping to 1 was used for most tests)
+clip_bias = 1
+init_rand_ampl = 0.1
+init_rand_ampl0 = 0.1 #2 # for first layer    (2 was used for most tests to make the first layer a mostly random layer)
+
+# drawing parameters
+scale_linewidth = 0.1
+weight_tanh_scale = 0.1
+scale_for_neuron_diff = 1
+
+scale_sigmoid = 3
+shift_sigmoid = 1
+
+few_shot_end = 0.2 # for early tests (no mnist)
+few_shot_max_try = 100
+few_shot_threshold_ratio = 1.5 # for mnist
+few_shot_threshold = 0.3
+
+# if 1 it is standard understanding of few shot learning, giving on data point at each shot, otherwize it adds more data points from availible training data to each shot
+few_shot_more_at_once = 5
+check_wrong = True
+
+all_labels = [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
+# random.shuffle(all_labels)    # if shuffeld, preloading can not work !!!!!
+try_load_pretrained = True
+few_shot_fast_load_num = 4000 # should also handle the batch_sizes for displaying batch training results properly
+
+test_from_random_input = False
+i_bits = 16
+
+# input data
+inputs = np_array([[0, 0, 0],
+                   [0, 0, 1],
+                   [0, 1, 0],
+                   [0, 1, 1],
+                   [1, 0, 0],
+                   [1, 0, 1],
+                   [1, 1, 0],
+                   [1, 1, 1]])
+
+# output data
+outputs = np_array([[0], [0], [1], [0], [1], [1], [0], [1]])
+
+# swith to tanh and making input and output 1 -1 instead of 1 0
+do_pm = False
+
+use_emnist = True
+load_mnist = True
+
+do_batch_training = 100000
+do_drop_weights = [] # [0.9,0.9]
+initial_net_first_layer_slow_learning = 1 # 0.1 # most tests are done with 0.1 here, just try if it was really necessary
+
+first_n_to_use = 600000
+label_to_one = 5
+
+num_outputs = 10 # most early test need this to be 1, later with mnist dataset this can be set to 10 eg.
+
+try_mnist_few_shot = 10
+use_every_shot_n_times = 1 # every data is used n times. so one shot means the data from first shot is used n times
+change_first_layers_slow_learning = [1, 1] # [0, 0.1]
+
+
+disable_progressbar = False
+
+# uncomment to run in jupyter notebook
+%run -i _code_.py </div><i class="fa fa-lightbulb-o "></i>
+```
+
+    Special few shot configuration, using additional data in every shot. Not the standard understanding of few shot!!!
+    labels (last two are used for few_shot) [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
+    Network parameters:  54912 dropped 0 real parameters 54912 drop definition []
+    loaded pretrained net !!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+
+![png](README_files/README_4_1.png)
+
+
+    train 4000 batch_size 1000 correct 999.0 of 1000 Ratio 0.999 Error 0.0011126788119728693
+    test 4000 batch_size 1000 correct 989.0 of 1000 Ratio 0.989 Error 0.01950864256808672
+    Testing if new lables were not learned !!!!!!!!!
+    new   4000 batch_size 1000 correct 0.0 of 1000 Ratio 0.0 Error 1.6566784770753793
+    few shot accuracy results
+    shot     try       old labels            new labels  new labels (forced)              over all
+       1      1             0.485                 0.597                0.706                 0.496
+       2      1             0.296                 0.669                0.716                 0.357
+       3      1             0.288                 0.310                0.670                 0.289
+       4      1             0.335                 0.677                0.727                 0.399
+       5      1             0.387                 0.683                0.811                 0.443
+       6      1             0.382                 0.720                0.806                 0.438
+       7      1             0.400                 0.759                0.893                 0.474
+       8      1             0.352                 0.845                0.900                 0.442
+       9      1             0.487                 0.502                0.820                 0.479
+      10      1             0.386                 0.617                0.947                 0.433
+
+
+
+```python
+<div class="girk">
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+based on: https://towardsdatascience.com/inroduction-to-neural-networks-in-python-7e0b422e6c24
+    and https://stackoverflow.com/questions/29888233/how-to-visualize-a-neural-network/29889993
+    and https://towardsdatascience.com/how-to-build-your-own-neural-network-from-scratch-in-python-68998a08e4f6
+    and https://www.python-course.eu/neural_network_mnist.php
+Created on Sun Jul 19 15:45:02 2020
+
+@author: detlef
+
+INSTALLATION:
+use it within anaconda and install cupy if cuda availible
+you will need https://www.python-course.eu/data/mnist/mnist_train.csv and https://www.python-course.eu/data/mnist/mnist_test.csv (mnist in csv) in the data/mnist subdirectory
+emnist not in anaconda at the moment, use pip install emnist
+
+on Google Colab (turn on GPU!!)
+!curl https://colab.chainer.org/install | sh -
+!pip install emnist
+
+REMARKS:
+    
+loss function used = 1/2 SUM(error**2) // making the derivative error
+"""
+
+import cupy as np # helps with the math (Cuda supported: faster for hidden_size > 256 probably and most mnist cases with batch training)
+#import numpy as np # helps with the math (if no Cuda is availible or size is small for simple tests)
+from matplotlib import pyplot
+from math import cos, sin, atan
+import random
+import pickle
+from datetime import datetime
+from tqdm import tqdm
+from emnist import extract_training_samples, extract_test_samples
+
+def np_array(x):
+    return np.array(x)# , dtype = np.float32) # float32 is 3 times faster on batch training with GTX1070Ti and 70 times faster than i7-4790K with float64, cpu does not help float32 a lot)
+check_for_nan = True
+
+pyplot.rcParams['figure.dpi'] = 150
+pyplot.interactive(False) # seems not to fix memory issue
+
+verbose = 0
+
+do_check_all = 0 #1000            # 0 to turn off
+check_output_limit = 128        # number of output combinations, as not every neural net is capable of learning input 0 0 0 -> output 1, if 128 the output to the first input is always 0    
+
+multi_test = -1 #1000             # -1 to turn off
+max_iter = 30
+
+hidden_size = 64
+two_hidden_layers = True
+use_bias = False
+
+lr = 2
+lr_few_shot = 0.5
+use_stability = False
+stability_mean = 0.1
+clip_weights = 1 # (clipping to 1 was used for most tests)
+clip_bias = 1
+init_rand_ampl = 0.1
+init_rand_ampl0 = 0.1 #2 # for first layer    (2 was used for most tests to make the first layer a mostly random layer)
+
+# drawing parameters
+scale_linewidth = 0.1
+weight_tanh_scale = 0.1
+scale_for_neuron_diff = 1
+
+scale_sigmoid = 3
+shift_sigmoid = 1
+
+few_shot_end = 0.2 # for early tests (no mnist)
+few_shot_max_try = 100
+few_shot_threshold_ratio = 1.5 # for mnist
+few_shot_threshold = 0.3
+
+# if 1 it is standard understanding of few shot learning, giving on data point at each shot, otherwize it adds more data points from availible training data to each shot
+few_shot_more_at_once = 1
+check_wrong = True
+
+all_labels = [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
+# random.shuffle(all_labels)    # if shuffeld, preloading can not work !!!!!
+try_load_pretrained = True
+few_shot_fast_load_num = 4000 # should also handle the batch_sizes for displaying batch training results properly
+
+test_from_random_input = False
+i_bits = 16
+
+# input data
+inputs = np_array([[0, 0, 0],
+                   [0, 0, 1],
+                   [0, 1, 0],
+                   [0, 1, 1],
+                   [1, 0, 0],
+                   [1, 0, 1],
+                   [1, 1, 0],
+                   [1, 1, 1]])
+
+# output data
+outputs = np_array([[0], [0], [1], [0], [1], [1], [0], [1]])
+
+# swith to tanh and making input and output 1 -1 instead of 1 0
+do_pm = False
+
+use_emnist = True
+load_mnist = True
+
+do_batch_training = 100000
+do_drop_weights = [] # [0.9,0.9]
+initial_net_first_layer_slow_learning = 1 # 0.1 # most tests are done with 0.1 here, just try if it was really necessary
+
+first_n_to_use = 600000
+label_to_one = 5
+
+num_outputs = 10 # most early test need this to be 1, later with mnist dataset this can be set to 10 eg.
+
+try_mnist_few_shot = 10
+use_every_shot_n_times = 1 # every data is used n times. so one shot means the data from first shot is used n times
+change_first_layers_slow_learning = [0, 1] # [0, 0.1]
+
+
+disable_progressbar = False
+
+# uncomment to run in jupyter notebook
+%run -i _code_.py </div><i class="fa fa-lightbulb-o "></i>
+```
+
+    labels (last two are used for few_shot) [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
+    Network parameters:  54912 dropped 0 real parameters 54912 drop definition []
+    loaded pretrained net !!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+
+![png](README_files/README_5_1.png)
+
+
+    train 4000 batch_size 1000 correct 999.0 of 1000 Ratio 0.999 Error 0.0011126788119728693
+    test 4000 batch_size 1000 correct 989.0 of 1000 Ratio 0.989 Error 0.01950864256808672
+    Testing if new lables were not learned !!!!!!!!!
+    new   4000 batch_size 1000 correct 0.0 of 1000 Ratio 0.0 Error 1.6566784770753793
+    few shot accuracy results
+    shot     try       old labels            new labels  new labels (forced)              over all
+       1      1             0.569                 0.508                0.517                 0.558
+       2      1             0.672                 0.642                0.659                 0.661
+       3      1             0.565                 0.505                0.517                 0.557
+       4      1             0.649                 0.501                0.529                 0.626
+       5      1             0.564                 0.642                0.661                 0.584
+       6      1             0.684                 0.724                0.733                 0.696
+       7      1             0.364                 0.515                0.517                 0.398
+       8      1             0.458                 0.525                0.536                 0.474
+       9      1             0.454                 0.532                0.541                 0.477
+      10      1             0.451                 0.784                0.792                 0.508
+
+
+
+```python
+x = []
+y = []
+for xx in np.arange(-1,3,0.1):
+    x.append(xx)
+    y.append(sigmoid(xx))
+pyplot.plot(x,y)
+pyplot.show()
+```
+
+
+![png](README_files/README_6_0.png)
+
+
+
+```python
+hidden_size = 4
+inputs= np.array([[0,0,0,0,0]])
+num_outputs = 3
+outputs= np.array([[0,0,0]])
+NN2 = setup_net()
+NN2.set_input(inputs[0],outputs[0])
+NN2.forward()
+NN2.draw()
+```
+
+
+![png](README_files/README_7_0.png)
+
 
 
 ```python
@@ -1700,7 +584,7 @@ check_output_limit = 128        # number of output combinations, as not every ne
 multi_test = -1 #1000             # -1 to turn off
 max_iter = 30
 
-hidden_size = 128
+hidden_size = 64
 two_hidden_layers = True
 use_bias = False
 
@@ -1728,11 +612,11 @@ few_shot_threshold = 0.3
 
 # if 1 it is standard understanding of few shot learning, giving on data point at each shot, otherwize it adds more data points from availible training data to each shot
 few_shot_more_at_once = 5
-
+check_wrong = True
 
 all_labels = [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
 # random.shuffle(all_labels)    # if shuffeld, preloading can not work !!!!!
-try_load_pretrained = True
+try_load_pretrained = False
 few_shot_fast_load_num = 4000 # should also handle the batch_sizes for displaying batch training results properly
 
 test_from_random_input = False
@@ -1759,7 +643,7 @@ load_mnist = True
 
 do_batch_training = 100000
 do_drop_weights = [] # [0.9,0.9]
-initial_net_first_layer_slow_learning = 1 # 0.1 # most tests are done with 0.1 here, just try if it was really necessary
+initial_net_first_layer_slow_learning = 0.01 # 0.1 # most tests are done with 0.1 here, just try if it was really necessary
 
 first_n_to_use = 600000
 label_to_one = 5
@@ -1768,7 +652,7 @@ num_outputs = 10 # most early test need this to be 1, later with mnist dataset t
 
 try_mnist_few_shot = 10
 use_every_shot_n_times = 1 # every data is used n times. so one shot means the data from first shot is used n times
-change_first_layers_slow_learning = [0.1, 1] # [0, 0.1]
+change_first_layers_slow_learning = [0.01, 1] # [0, 0.1]
 
 
 disable_progressbar = False
@@ -1779,28 +663,37 @@ disable_progressbar = False
 
     Special few shot configuration, using additional data in every shot. Not the standard understanding of few shot!!!
     labels (last two are used for few_shot) [0, 1, 9, 3, 4, 5, 6, 7, 8, 2]
-    Network parameters:  118016 dropped 0 real parameters 118016 drop definition []
-    loaded pretrained net !!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+      0%|          | 0/100000 [00:00<?, ?it/s]
+
+    start 15:55:56
+
+
+    Err  0.007: 100%|██████████| 100000/100000 [1:17:58<00:00, 21.37it/s]
+
+
+    end 17:13:55
 
 
 
-![png](README_files/README_27_1.png)
+![png](README_files/README_8_5.png)
 
 
-    train 4000 batch_size 1000 correct 998.0 of 1000 Ratio 0.998 Error 0.0030186748020949315
-    test 4000 batch_size 1000 correct 991.0 of 1000 Ratio 0.991 Error 0.014413614294520559
+    train 192000 batch_size 1000 correct 996.0 of 1000 Ratio 0.996 Error 0.008494603222037725
+    test 4000 batch_size 1000 correct 989.0 of 1000 Ratio 0.989 Error 0.021232006355433916
     Testing if new lables were not learned !!!!!!!!!
-    new   4000 batch_size 1000 correct 0.0 of 1000 Ratio 0.0 Error 1.6693057776547948
+    new   4000 batch_size 1000 correct 0.0 of 1000 Ratio 0.0 Error 1.5956471595383732
     few shot accuracy results
     shot     try       old labels            new labels  new labels (forced)              over all
-       1      1             0.847                 0.454                0.528                 0.776
-       2      1             0.863                 0.678                0.723                 0.824
-       3      1             0.949                 0.455                0.517                 0.859
-       4      1             0.954                 0.465                0.537                 0.867
-       5      1             0.867                 0.588                0.604                 0.821
-       6      1             0.906                 0.800                0.878                 0.885
-       7      1             0.925                 0.626                0.827                 0.873
-       8      1             0.926                 0.744                0.831                 0.895
-       9      1             0.950                 0.745                0.916                 0.910
-      10      1             0.937                 0.746                0.882                 0.899
+       1      1             0.896                 0.409                0.645                 0.809
+       2      1             0.754                 0.573                0.699                 0.722
+       3      1             0.926                 0.484                0.667                 0.841
+       4      1             0.855                 0.637                0.832                 0.816
+       5      1             0.836                 0.730                0.821                 0.813
+       6      1             0.890                 0.574                0.688                 0.830
+       7      1             0.935                 0.683                0.893                 0.880
+       8      1             0.879                 0.778                0.881                 0.860
+       9      1             0.878                 0.806                0.914                 0.865
+      10      1             0.874                 0.801                0.906                 0.862
 
